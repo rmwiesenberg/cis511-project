@@ -25,8 +25,9 @@ class TurkData(NamedTuple):
 
 class TurkDataset(SimplicityDataset):
     def __init__(self, turk_data: List[TurkData]):
+        self.turk_data = turk_data
         self.pairs = []
-        for entry in turk_data:
+        for entry in self.turk_data:
             self.pairs.extend([SimplicityPair(entry.norm, s)
                                for s in entry.simps()])
 

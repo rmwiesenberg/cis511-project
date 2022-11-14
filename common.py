@@ -2,6 +2,11 @@ from abc import ABC
 from pathlib import Path
 from typing import Tuple, NamedTuple
 
+import torch
+from torch.utils.data import Dataset
+
+TRAIN_ON_GPU = torch.cuda.is_available()
+
 THIS_DIR = Path(__file__).resolve().parent
 DATA_DIR = THIS_DIR / 'data'
 NUM_TO_PRINT = 20
@@ -23,7 +28,7 @@ class SimplicityPair(NamedTuple):
     simp: Sentence
 
 
-class SimplicityDataset(ABC):
+class SimplicityDataset(Dataset):
     def __len__(self):
         raise NotImplementedError()
 
