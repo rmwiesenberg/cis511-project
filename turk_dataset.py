@@ -1,7 +1,4 @@
-from pathlib import Path
-from typing import NamedTuple, List, Tuple
-
-from common import Sentence, SimplicityPair, SimplicityDataset, DATA_DIR
+from common import *
 
 TURK_DIR = DATA_DIR / 'turkcorpus'
 TURK_TUNE = TURK_DIR / 'tune'
@@ -13,24 +10,18 @@ TURK_WIKI_SIMP_FILE = TURK_FILE_FORMAT.format('simp')
 TURK_TURK_SIMP_FILES = [TURK_FILE_FORMAT.format(f'turk.{i}') for i in range(8)]
 
 
-class TurkData(NamedTuple):
+class TurkData(NamedTuple, SimplicityPairings):
     norm: Sentence
     wiki_simp: Sentence
     turk_simps: Tuple[Sentence]
 
+    @property
     def simps(self) -> List[Sentence]:
         """Get all simplifications (wiki + turk)."""
         return [self.wiki_simp, *self.turk_simps]
 
 
 class TurkDataset(SimplicityDataset):
-    def __init__(self, turk_data: List[TurkData]):
-        self.turk_data = turk_data
-        self.pairs = []
-        for entry in self.turk_data:
-            self.pairs.extend([SimplicityPair(entry.norm, s)
-                               for s in entry.simps()])
-
     @staticmethod
     def sentences_from_file(filepath: Path) -> List[Sentence]:
         sentences = []

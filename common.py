@@ -1,6 +1,7 @@
 from abc import ABC
+import itertools
 from pathlib import Path
-from typing import Tuple, NamedTuple
+from typing import Tuple, NamedTuple, List
 
 import torch
 from torch.utils.data import Dataset
@@ -28,7 +29,40 @@ class SimplicityPair(NamedTuple):
     simp: Sentence
 
 
+class SimplicityPairings(ABC):
+    @property
+    def norm(self) -> Sentence:
+        raise NotImplementedError()
+
+    @property
+    def simps(self) -> List[Sentence]:
+        raise NotImplementedError()
+
+
 class SimplicityDataset(Dataset):
+    def __init__(self, pairings: List[SimplicityPairings]):
+        self.pairings = pairings
+        self.pairs = []
+        for entry in self.pairings:
+            self.pairs.extend([SimplicityPair(entry.norm, s)
+                               for s in entry.simps])
+
+    @property
+    def all(self) -> List[Sentence]:
+        return list(itertools.chain.from_iterable([
+            [t.norm] + t.simps for t in self.pairings
+        ]))
+
+    @property
+    def norms(self) -> List[Sentence]:
+        return [t.norm for t in self.pairings]
+
+    @property
+    def simps(self) -> List[Sentence]:
+        return list(itertools.chain.from_iterable([
+            t.simps for t in self.pairings
+        ]))
+
     def __len__(self):
         raise NotImplementedError()
 
@@ -48,7 +82,3 @@ def compute_metric_main(metric: SimplicityMetric, dataset: SimplicityDataset):
         pair = dataset[idx]
         result = results[idx]
         print(f'{idx}: {pair.norm}\n->{pair.simp}\n--> Score: {result}')
-
-
-
-
