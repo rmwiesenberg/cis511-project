@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from common import *
 
 TURK_DIR = DATA_DIR / 'turkcorpus'
@@ -10,10 +12,16 @@ TURK_WIKI_SIMP_FILE = TURK_FILE_FORMAT.format('simp')
 TURK_TURK_SIMP_FILES = [TURK_FILE_FORMAT.format(f'turk.{i}') for i in range(8)]
 
 
-class TurkData(NamedTuple, SimplicityPairings):
-    norm: Sentence
-    wiki_simp: Sentence
-    turk_simps: Tuple[Sentence]
+class TurkData(SimplicityPairings):
+    def __init__(self, norm: Sentence,
+                 wiki_simp: Sentence, turk_simps: Tuple[Sentence]):
+        self._norm = norm
+        self.wiki_simp = wiki_simp
+        self.turk_simps = turk_simps
+
+    @property
+    def norm(self) -> Sentence:
+        return self._norm
 
     @property
     def simps(self) -> List[Sentence]:

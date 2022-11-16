@@ -1,202 +1,169 @@
 from collections import Counter, defaultdict
-from typing import Dict
+from typing import Dict, Iterable
 
 import numpy as np
 from torch import nn
 from torch.utils.data import DataLoader
-from torch.utils.data.dataset import T_co
 
 from common import *
 from turk_dataset import TurkDataset
 
 
 class HomebrewModel(nn.Module):
-    def __init__(
-            self, *, vocab_size, embedding_dim, hidden_dim, n_layers
-    ):
+    def __init__(self, *, vocab_size: int):
         super(HomebrewModel, self).__init__()
 
-        self.n_layers = n_layers
-        self.hidden_dim = hidden_dim
+        self.num_layers = 4
+        self.embedding_size = 256
+        self.hidden_size = 64
 
-        # embedding and LSTM layers
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, n_layers,
-                            dropout=0.5, batch_first=True)
+        self.embedding = nn.Embedding(vocab_size, self.embedding_size)
+        self.gru = nn.GRU(input_size=self.embedding_size,
+                          hidden_size=self.hidden_size,
+                          num_layers=self.num_layers,
+                          dropout=0.5)
 
-        # dropout layer
-        self.dropout = nn.Dropout(0.3)
-
-        # linear and sigmoid layers
-        self.fc = nn.Linear(hidden_dim, 1)
-        self.sig = nn.Sigmoid()
-
-    def forward(self, x, hidden):
-        """
-        Perform a forward pass of our model on some input and hidden state.
-        """
-        batch_size = x.size(0)
-
-        # embeddings and lstm_out
-        x = x.long()
-        embeds = self.embedding(x)
-        lstm_out, hidden = self.lstm(embeds, hidden)
-
-        # stack up lstm outputs
-        lstm_out = lstm_out.contiguous().view(-1, self.hidden_dim)
-
-        # dropout and fully-connected layer
-        out = self.dropout(lstm_out)
-        out = self.fc(out)
-        # sigmoid function
-        sig_out = self.sig(out)
-
-        # reshape to be batch_size first
-        sig_out = sig_out.view(batch_size, -1)
-        sig_out = sig_out[:, -1]  # get last batch of labels
-
-        # return last sigmoid output and hidden state
-        return sig_out, hidden
-
-    def init_hidden(self, batch_size):
-        """Initializes hidden state"""
-        # Create two new tensors with sizes n_layers x batch_size x hidden_dim,
-        # initialized to zero, for hidden state and cell state of LSTM
-        weight = next(self.parameters()).data
-        hidden = (
-            weight.new(self.n_layers, batch_size, self.hidden_dim).zero_(),
-            weight.new(self.n_layers, batch_size, self.hidden_dim).zero_()
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(self.hidden_size, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()
         )
 
-        if TRAIN_ON_GPU:
-            hidden = (h.cuda() for h in hidden)
+    def forward(self, x):
+        hidden_state = self.init_hidden(x.shape[1])
+        x = self.embedding(x)
+        output, hidden_state = self.gru(x, hidden_state)
+        output = self.classifier(output[-1]).squeeze()
+        return output
 
+    def init_hidden(self, batch_size: int):
+        hidden = torch.zeros(self.num_layers, batch_size, self.hidden_size)
+        if TRAIN_ON_GPU:
+            hidden = hidden.cuda()
         return hidden
+
+
+def featurize_sentence(sentence: Sentence, lookup: Dict[str, int]) -> List[np.ndarray]:
+    return np.array([lookup[w] for w in sentence], dtype=int)
 
 
 class HomebrewDataset(Dataset):
     def __init__(self, dataset: SimplicityDataset, lookup: Dict[str, int]):
-        self.x: List[np.ndarray] = []
-        self.y: List[int] = []
-
-        def featurize_sentence(sentence: Sentence) -> List[np.ndarray]:
-            return np.array([lookup[w] for w in sentence], dtype=int)
+        self.sentences: List[np.ndarray] = []
+        self.labels: List[int] = []
 
         for pairing in dataset.pairings:
-            self.x.append(featurize_sentence(pairing.norm))
-            self.y.append(1)
+            norm = pairing.norm
+            self.sentences.append(featurize_sentence(norm, lookup))
+            self.labels.append(1)
 
             for simp in pairing.simps:
-                self.x.append(featurize_sentence(simp))
-                self.y.append(0)
+                if norm == simp:
+                    continue
+                self.sentences.append(featurize_sentence(simp, lookup))
+                self.labels.append(0)
+        assert len(self.sentences) == len(self.labels)
+        print(f'Created HomebrewDataset with {len(self.sentences)} sentences.')
+        print(f'-> {100 * sum(self.labels) / len(self.labels):.2f}% complex')
+
+    def __len__(self):
+        return len(self.sentences)
 
     def __getitem__(self, index: int) -> Tuple[np.ndarray, int]:
-        return self.x[index], self.y[index]
+        return self.sentences[index], self.labels[index]
+
+
+def collate_fn_pad(batch: Iterable[Tuple[np.ndarray, int]]):
+    lengths = torch.tensor([t[0].shape[0] for t in batch])
+    sentence_tensors = [torch.tensor(t[0], dtype=torch.long) for t in batch]
+    label_tensor = torch.tensor([t[1] for t in batch], dtype=torch.float)
+
+    sentences_tensor = torch.nn.utils.rnn.pad_sequence(sentence_tensors).long()
+    return sentences_tensor, label_tensor, lengths
 
 
 class HomebrewMetric(SimplicityMetric):
-    EMBEDDING_DIM = 64
-    HIDDEN_DIM = 32
-    N_LAYERS = 4
-
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0005
 
     def __init__(self, tune_data: SimplicityDataset):
         counter = Counter()
         for sentence in tune_data.all:
             counter.update(sentence)
         self.lookup = defaultdict(int)
-        for idx, word in enumerate(counter.most_common()):
+        for idx, (word, num) in enumerate(counter.most_common()):
             self.lookup[word] = idx + 1
 
-        self.model = HomebrewModel(
-            vocab_size=self.lookup, embedding_dim=64,
-            hidden_dim=32, n_layers=4
-        )
+        # Add 1 to vocab size to accommodate for zeros.
+        vocab_size = len(self.lookup)+1
+        self.model = HomebrewModel(vocab_size=vocab_size)
 
         self.criterion = nn.BCELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(),
                                           lr=self.LEARNING_RATE)
 
-    def tune(self, tune_data: SimplicityDataset,
-             epochs: int = 4, batch_size: int = 50, print_every: int = 100):
+    def predict(self, sentence: Sentence) -> float:
+        self.model.eval()
+        with torch.no_grad():
+            feat_sentence = [featurize_sentence(sentence, self.lookup)]
+            tensor = torch.tensor(feat_sentence).transpose(0, 1)
+            return self.model(tensor)
+
+    def tune(self, tune_data: SimplicityDataset, num_epochs: int = 10,
+             batch_size: int = 50, print_interval: int = 100):
         tune_loader = DataLoader(HomebrewDataset(tune_data, self.lookup),
-                                 shuffle=True, batch_size=batch_size)
-
-        # training params
-        counter = 0
-        clip = 5  # gradient clipping
-
-        # move model to GPU, if available
+                                 shuffle=True, batch_size=batch_size,
+                                 collate_fn=collate_fn_pad)
         if TRAIN_ON_GPU:
             self.model.cuda()
 
         self.model.train()
-        # train for some number of epochs
-        for e in range(epochs):
-            # initialize hidden state
-            h = self.model.init_hidden(batch_size)
+        for epoch in range(num_epochs):
+            for i, (sentences, labels, lengths) in enumerate(tune_loader):
+                outputs = self.model(sentences)
+                loss = self.criterion(outputs, labels)
 
-            # batch loop
-            for inputs, labels in tune_loader:
-                counter += 1
-
-                if TRAIN_ON_GPU:
-                    inputs, labels = inputs.cuda(), labels.cuda()
-
-                # Creating new variables for the hidden state, otherwise
-                # we'd backprop through the entire training history
-                h = tuple([each.data for each in h])
-
-                # zero accumulated gradients
-                self.model.zero_grad()
-
-                # get the output from the model
-                output, h = self.model(inputs, h)
-
-                # calculate the loss and perform backprop
-                loss = self.criterion(output.squeeze(), labels.float())
+                self.optimizer.zero_grad()
                 loss.backward()
-
-                # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-                nn.utils.clip_grad_norm_(self.model.parameters(), clip)
+                nn.utils.clip_grad_norm_(self.model.parameters(), 5)
                 self.optimizer.step()
 
-                # loss stats
-                if counter % print_every == 0:
-                    # Get validation loss
-                    val_h = self.model.init_hidden(batch_size)
-                    val_losses = []
-                    self.model.eval()
-                    for inputs, labels in valid_loader:
+                if (i + 1) % print_interval == 0:
+                    print(
+                        f"Epoch [{epoch + 1}/{num_epochs}], "
+                        f"Step [{i + 1}/{len(tune_loader)}], "
+                        f"Loss: {loss.item():.4f}"
+                    )
 
-                        # Creating new variables for the hidden state, otherwise
-                        # we'd backprop through the entire training history
-                        val_h = tuple([each.data for each in val_h])
+    def eval(self, test_data: SimplicityDataset):
+        num_correct = 0
 
-                        if (train_on_gpu):
-                            inputs, labels = inputs.cuda(), labels.cuda()
+        self.model.eval()
+        with torch.no_grad():
+            for (sentence, label) in HomebrewDataset(test_data, self.lookup):
+                tensor = torch.tensor([sentence]).transpose(0, 1)
+                output = self.model(tensor)
+                pred = torch.round(output)
+                num_correct += bool(pred == label)
 
-                        output, val_h = net(inputs, val_h)
-                        val_loss = criterion(output.squeeze(), labels.float())
-
-                        val_losses.append(val_loss.item())
-
-                    net.train()
-                    print("Epoch: {}/{}...".format(e + 1, epochs),
-                          "Step: {}...".format(counter),
-                          "Loss: {:.6f}...".format(loss.item()),
-                          "Val Loss: {:.6f}".format(np.mean(val_losses)))
+        print(f'Accuracy: {100 * num_correct / len(test_data):.4f}%')
 
     def __call__(self, simplicity_pair: SimplicityPair) -> float:
-        return 0
+        norm_score = self.predict(simplicity_pair.norm)
+        simp_score = self.predict(simplicity_pair.simp)
+        return norm_score - simp_score
 
 
 def main():
     tune_data = TurkDataset.from_tune()
-
     test_data = TurkDataset.from_test()
-    compute_metric_main(HomebrewMetric(tune_data), test_data)
+
+    metric = HomebrewMetric(tune_data)
+    metric.tune(tune_data)
+    metric.eval(test_data)
+
+    compute_metric_main(metric, test_data)
 
 
 if __name__ == '__main__':
