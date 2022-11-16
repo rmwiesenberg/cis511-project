@@ -14,21 +14,23 @@ class HomebrewModel(nn.Module):
         super(HomebrewModel, self).__init__()
 
         self.num_layers = 4
-        self.embedding_size = 256
-        self.hidden_size = 64
+        self.embedding_size = 500
+        self.hidden_size = 128
 
-        self.embedding = nn.Embedding(vocab_size, self.embedding_size)
+        self.embedding = nn.Sequential(
+            nn.Embedding(vocab_size, self.embedding_size),
+            nn.Dropout(0.1),
+        )
         self.gru = nn.GRU(input_size=self.embedding_size,
                           hidden_size=self.hidden_size,
-                          num_layers=self.num_layers,
-                          dropout=0.5)
+                          num_layers=self.num_layers)
 
         self.classifier = nn.Sequential(
-            nn.Dropout(0.3),
+            nn.Dropout(0.1),
             nn.Linear(self.hidden_size, 16),
             nn.ReLU(),
             nn.Linear(16, 1),
-            nn.Sigmoid()
+            nn.ReLU()
         )
 
     def forward(self, x):
@@ -99,18 +101,20 @@ class HomebrewMetric(SimplicityMetric):
         vocab_size = len(self.lookup)+1
         self.model = HomebrewModel(vocab_size=vocab_size)
 
-        self.criterion = nn.BCELoss()
+        self.criterion = nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(),
                                           lr=self.LEARNING_RATE)
 
     def predict(self, sentence: Sentence) -> float:
         self.model.eval()
         with torch.no_grad():
-            feat_sentence = [featurize_sentence(sentence, self.lookup)]
-            tensor = torch.tensor(feat_sentence).transpose(0, 1)
+            feat_sentence = featurize_sentence(sentence, self.lookup)
+            tensor = torch.tensor([feat_sentence]).transpose(0, 1)
+            if TRAIN_ON_GPU:
+                tensor = tensor.cuda()
             return self.model(tensor)
 
-    def tune(self, tune_data: SimplicityDataset, num_epochs: int = 10,
+    def tune(self, tune_data: SimplicityDataset, num_epochs: int = 4,
              batch_size: int = 50, print_interval: int = 100):
         tune_loader = DataLoader(HomebrewDataset(tune_data, self.lookup),
                                  shuffle=True, batch_size=batch_size,
@@ -121,6 +125,11 @@ class HomebrewMetric(SimplicityMetric):
         self.model.train()
         for epoch in range(num_epochs):
             for i, (sentences, labels, lengths) in enumerate(tune_loader):
+                if TRAIN_ON_GPU:
+                    sentences = sentences.cuda()
+                    labels = labels.cuda()
+                    lengths = lengths.cuda()
+
                 outputs = self.model(sentences)
                 loss = self.criterion(outputs, labels)
 
@@ -143,6 +152,8 @@ class HomebrewMetric(SimplicityMetric):
         with torch.no_grad():
             for (sentence, label) in HomebrewDataset(test_data, self.lookup):
                 tensor = torch.tensor([sentence]).transpose(0, 1)
+                if TRAIN_ON_GPU:
+                    tensor = tensor.cuda()
                 output = self.model(tensor)
                 pred = torch.round(output)
                 num_correct += bool(pred == label)
