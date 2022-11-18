@@ -2,7 +2,7 @@
  
 ## Stage 1: Simplicity Metrics
 Goal: Implement 3+ Simplicity Metrics:
-- [Flesch-Kincaid](https://stars.library.ucf.edu/cgi/viewcontent.cgi?article=1055&context=istlibrary) - Not taken yet 
+- [Flesch-Kincaid](https://stars.library.ucf.edu/cgi/viewcontent.cgi?article=1055&context=istlibrary) - Joseph 
 - [BLEU](https://aclanthology.org/P02-1040.pdf) - Not taken yet
 - [SARI](https://aclanthology.org/Q16-1029.pdf) - Ahmed
 - [Lai's RNN/CNN](https://ojs.aaai.org/index.php/AAAI/article/view/9513/9372) - Not taken yet
