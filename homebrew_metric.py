@@ -14,16 +14,20 @@ class HomebrewModel(nn.Module):
         super(HomebrewModel, self).__init__()
 
         self.num_layers = 4
-        self.embedding_size = 500
-        self.hidden_size = 128
+        self.embedding_size = 256
+        self.hidden_size = 64
 
-        self.embedding = nn.Sequential(
-            nn.Embedding(vocab_size, self.embedding_size),
+        self.embedding = nn.Embedding(vocab_size, self.embedding_size)
+
+        self.conv = nn.Sequential(
             nn.Dropout(0.1),
+            nn.Conv1d(self.embedding_size, self.embedding_size,
+                      kernel_size=7, padding='same'),
+            nn.ReLU(),
         )
-        self.gru = nn.GRU(input_size=self.embedding_size,
-                          hidden_size=self.hidden_size,
-                          num_layers=self.num_layers)
+
+        self.gru = nn.GRU(input_size=self.embedding_size, hidden_size=self.hidden_size,
+                          num_layers=self.num_layers, dropout=0.3)
 
         self.classifier = nn.Sequential(
             nn.Dropout(0.1),
@@ -34,10 +38,23 @@ class HomebrewModel(nn.Module):
         )
 
     def forward(self, x):
-        hidden_state = self.init_hidden(x.shape[1])
+        batch_size = x.shape[0]
+        sentence_length = x.shape[1]
+
+        hidden = self.init_hidden(sentence_length)
+
         x = self.embedding(x)
-        output, hidden_state = self.gru(x, hidden_state)
-        output = self.classifier(output[-1]).squeeze()
+
+        # pe to look like channels for convolution.
+        x = torch.reshape(x, (batch_size, self.embedding_size, -1))
+
+        x = self.conv(x)
+
+        # Flip back around.
+        x = torch.reshape(x, (batch_size, x.shape[2], x.shape[1]))
+
+        x, hidden = self.gru(x, hidden)
+        output = self.classifier(x.sum(dim=1)).squeeze()
         return output
 
     def init_hidden(self, batch_size: int):
@@ -74,20 +91,27 @@ class HomebrewDataset(Dataset):
         return len(self.sentences)
 
     def __getitem__(self, index: int) -> Tuple[np.ndarray, int]:
-        return self.sentences[index], self.labels[index]
+        return torch.LongTensor(self.sentences[index]), self.labels[index]
 
 
 def collate_fn_pad(batch: Iterable[Tuple[np.ndarray, int]]):
-    lengths = torch.tensor([t[0].shape[0] for t in batch])
-    sentence_tensors = [torch.tensor(t[0], dtype=torch.long) for t in batch]
-    label_tensor = torch.tensor([t[1] for t in batch], dtype=torch.float)
+    # Sort the batch in the descending order
+    sorted_batch = sorted(batch, key=lambda x: x[0].shape[0], reverse=True)
+    # Get each sequence and pad it
+    sequences = [x[0] for x in sorted_batch]
+    sequences_padded = torch.nn.utils.rnn.pad_sequence(sequences,
+                                                       batch_first=True)
+    # Also need to store the length of each sequence
+    # This is later needed in order to unpad the sequences
+    lengths = torch.LongTensor([len(x) for x in sequences])
 
-    sentences_tensor = torch.nn.utils.rnn.pad_sequence(sentence_tensors).long()
-    return sentences_tensor, label_tensor, lengths
+    # Don't forget to grab the labels of the *sorted* batch
+    labels = torch.FloatTensor(list(map(lambda x: x[1], sorted_batch)))
+    return sequences_padded, labels, lengths
 
 
 class HomebrewMetric(SimplicityMetric):
-    LEARNING_RATE = 0.0005
+    LEARNING_RATE = 0.001
 
     def __init__(self, tune_data: SimplicityDataset):
         counter = Counter()
@@ -131,7 +155,7 @@ class HomebrewMetric(SimplicityMetric):
                     lengths = lengths.cuda()
 
                 outputs = self.model(sentences)
-                loss = self.criterion(outputs, labels)
+                loss = self.criterion(outputs, labels.float())
 
                 self.optimizer.zero_grad()
                 loss.backward()
