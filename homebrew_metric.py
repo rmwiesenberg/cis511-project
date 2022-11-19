@@ -10,6 +10,12 @@ from turk_dataset import TurkDataset
 
 
 class HomebrewModel(nn.Module):
+    @staticmethod
+    def init_weights(layer):
+        if isinstance(layer, nn.Linear):
+            torch.nn.init.xavier_uniform(layer.weight)
+            layer.bias.data.fill_(0.01)
+
     def __init__(self, *, vocab_size: int):
         super(HomebrewModel, self).__init__()
 
@@ -20,22 +26,26 @@ class HomebrewModel(nn.Module):
         self.embedding = nn.Embedding(vocab_size, self.embedding_size)
 
         self.conv = nn.Sequential(
-            nn.Dropout(0.1),
+            nn.Dropout(0.3),
             nn.Conv1d(self.embedding_size, self.embedding_size,
-                      kernel_size=7, padding='same'),
-            nn.ReLU(),
+                      kernel_size=3, padding='same'),
+            nn.Conv1d(self.embedding_size, 128,
+                      kernel_size=5, padding='same'),
+            nn.LeakyReLU(),
         )
 
-        self.gru = nn.GRU(input_size=self.embedding_size,
+        self.gru = nn.GRU(input_size=128,
                           hidden_size=self.hidden_size,
                           num_layers=self.num_layers)
 
         self.classifier = nn.Sequential(
             nn.Linear(self.hidden_size, 16),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(16, 1),
-            nn.ReLU()
+            nn.Sigmoid()
         )
+
+        self.classifier.apply(self.init_weights)
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -45,7 +55,7 @@ class HomebrewModel(nn.Module):
 
         x = self.embedding(x)
 
-        # pe to look like channels for convolution.
+        # Shape to look like channels for convolution.
         x = torch.reshape(x, (batch_size, self.embedding_size, -1))
 
         x = self.conv(x)
@@ -111,7 +121,7 @@ def collate_fn_pad(batch: Iterable[Tuple[np.ndarray, int]]):
 
 
 class HomebrewMetric(SimplicityMetric):
-    LEARNING_RATE = 0.0001
+    LEARNING_RATE = 0.0005
 
     def __init__(self, tune_data: SimplicityDataset):
         counter = Counter()
@@ -122,10 +132,10 @@ class HomebrewMetric(SimplicityMetric):
             self.lookup[word] = idx + 1
 
         # Add 1 to vocab size to accommodate for zeros.
-        vocab_size = len(self.lookup)+1
+        vocab_size = len(self.lookup) + 1
         self.model = HomebrewModel(vocab_size=vocab_size)
 
-        self.criterion = nn.MSELoss()
+        self.criterion = nn.BCELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(),
                                           lr=self.LEARNING_RATE)
 
@@ -166,7 +176,7 @@ class HomebrewMetric(SimplicityMetric):
                     print(
                         f"Epoch [{epoch + 1}/{num_epochs}], "
                         f"Step [{i + 1}/{len(tune_loader)}], "
-                        f"Loss: {loss.item():.4f}"
+                        f"Loss: {loss.item():.2f}"
                     )
 
     def eval(self, test_data: SimplicityDataset, batch_size: int = 50):
@@ -185,8 +195,8 @@ class HomebrewMetric(SimplicityMetric):
                     lengths = lengths.cuda()
 
                 outputs = self.model(sentences)
-                pred = np.maximum(np.round(outputs.numpy()), 1)
-                num_correct += np.sum(pred == labels.numpy())
+                pred = np.minimum(np.round(outputs.numpy()), 1).astype(bool)
+                num_correct += np.sum(pred == labels.numpy().astype(bool))
 
         print(f'Accuracy: {100 * num_correct / len(test_data):.4f}%')
 
