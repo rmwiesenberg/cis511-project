@@ -26,11 +26,11 @@ class HomebrewModel(nn.Module):
             nn.ReLU(),
         )
 
-        self.gru = nn.GRU(input_size=self.embedding_size, hidden_size=self.hidden_size,
-                          num_layers=self.num_layers, dropout=0.3)
+        self.gru = nn.GRU(input_size=self.embedding_size,
+                          hidden_size=self.hidden_size,
+                          num_layers=self.num_layers)
 
         self.classifier = nn.Sequential(
-            nn.Dropout(0.1),
             nn.Linear(self.hidden_size, 16),
             nn.ReLU(),
             nn.Linear(16, 1),
@@ -111,7 +111,7 @@ def collate_fn_pad(batch: Iterable[Tuple[np.ndarray, int]]):
 
 
 class HomebrewMetric(SimplicityMetric):
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0001
 
     def __init__(self, tune_data: SimplicityDataset):
         counter = Counter()
@@ -133,7 +133,7 @@ class HomebrewMetric(SimplicityMetric):
         self.model.eval()
         with torch.no_grad():
             feat_sentence = featurize_sentence(sentence, self.lookup)
-            tensor = torch.tensor([feat_sentence]).transpose(0, 1)
+            tensor = torch.tensor([feat_sentence])
             if TRAIN_ON_GPU:
                 tensor = tensor.cuda()
             return self.model(tensor)
@@ -169,18 +169,24 @@ class HomebrewMetric(SimplicityMetric):
                         f"Loss: {loss.item():.4f}"
                     )
 
-    def eval(self, test_data: SimplicityDataset):
+    def eval(self, test_data: SimplicityDataset, batch_size: int = 50):
         num_correct = 0
+
+        test_loader = DataLoader(HomebrewDataset(test_data, self.lookup),
+                                 shuffle=True, batch_size=batch_size,
+                                 collate_fn=collate_fn_pad)
 
         self.model.eval()
         with torch.no_grad():
-            for (sentence, label) in HomebrewDataset(test_data, self.lookup):
-                tensor = torch.tensor([sentence]).transpose(0, 1)
+            for i, (sentences, labels, lengths) in enumerate(test_loader):
                 if TRAIN_ON_GPU:
-                    tensor = tensor.cuda()
-                output = self.model(tensor)
-                pred = torch.round(output)
-                num_correct += bool(pred == label)
+                    sentences = sentences.cuda()
+                    labels = labels.cuda()
+                    lengths = lengths.cuda()
+
+                outputs = self.model(sentences)
+                pred = np.maximum(np.round(outputs.numpy()), 1)
+                num_correct += np.sum(pred == labels.numpy())
 
         print(f'Accuracy: {100 * num_correct / len(test_data):.4f}%')
 
